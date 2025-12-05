@@ -1,0 +1,4 @@
+python-rtmidi>=1.4.0
+# Note: sense-hat should be installed via apt: sudo apt-get install sense-hat python3-sense-hat
+# The virtual environment is created with --system-site-packages to access system sense-hat
+

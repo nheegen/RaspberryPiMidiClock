@@ -50,51 +50,52 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Ensure your MIDI interface is connected and recognized:
+5. Ensure your MIDI interface is connected and recognized:
 ```bash
 # Check if MIDI device is detected
 aconnect -l
 ```
 
-5. **Disable OS joystick handling (recommended):**
+6. **Optional: Set up systemd service for auto-start at boot:**
    
-   By default, the Sense HAT joystick also controls the Raspberry Pi OS (cursor movement, etc.), which can interfere with the MIDI clock application. To disable OS joystick handling so only your application can use it:
-   
-   ```bash
-   ./disable_os_joystick.sh
-   ```
-   
-   This will:
-   - Unload the joystick kernel module
-   - Blacklist it to prevent loading on boot
-   - Allow your MIDI clock application exclusive access to the joystick
-   
-   **Note:** You may need to reboot for changes to take full effect:
-   ```bash
-   sudo reboot
-   ```
-   
-   To re-enable OS joystick handling later:
-   ```bash
-   sudo rm /etc/modprobe.d/blacklist-rpisense-js.conf
-   sudo reboot
-   ```
+   The project includes a systemd service file that can be set up to automatically start the MIDI clock at boot. The service file should be located at `/etc/systemd/system/midi-clock.service` and uses the `run-on-console.sh` script.
 
 ## Usage
 
-Activate the virtual environment (if you used one) and run the application:
+### Quick Start (Recommended)
+
+Use the provided helper script:
 ```bash
+cd ~/RaspberryPiMidiClock
+./start_midi_clock.sh
+```
+
+### Manual Start
+
+Activate the virtual environment and run the application:
+```bash
+cd ~/RaspberryPiMidiClock
 source venv/bin/activate
 python3 midi_clock.py
 ```
 
-Or if you installed packages system-wide:
+### Stop the Application
+
+Use the stop script:
 ```bash
-python3 midi_clock.py
+./stop_midi_clock.sh
 ```
 
+Or if running as a systemd service:
+```bash
+sudo systemctl stop midi-clock.service
+```
+
+Or manually with `Ctrl+C` if running in foreground, or `pkill -f midi_clock.py` if running in background.
+
 The application will:
-- Detect available MIDI output ports
+- Automatically detect and open all ESI MIDIMATE eX ports (or first available MIDI port if ESI not found)
+- Send MIDI clock to all open ports simultaneously
 - Display the current BPM on the Sense HAT LED matrix
 - Respond to joystick input for BPM control and start/stop
 
@@ -138,17 +139,34 @@ If the Sense HAT is not working:
 
 If the joystick is controlling the Raspberry Pi OS (cursor movement, etc.) instead of just the MIDI clock application:
 
-1. Run the disable script: `./disable_os_joystick.sh`
-2. Reboot if needed: `sudo reboot`
-3. The joystick will now only work with your MIDI clock application
+You can disable OS joystick handling by blacklisting the joystick kernel module. Create a blacklist file:
+```bash
+echo "blacklist rpisense-js" | sudo tee /etc/modprobe.d/blacklist-rpisense-js.conf
+sudo modprobe -r rpisense-js
+sudo reboot
+```
 
 The Sense HAT Python library can still access the joystick directly through I2C even when the OS kernel module is disabled.
+
+To re-enable OS joystick handling later:
+```bash
+sudo rm /etc/modprobe.d/blacklist-rpisense-js.conf
+sudo reboot
+```
 
 ### Permission issues
 
 If you encounter permission errors:
 1. Add your user to the `i2c` group: `sudo usermod -a -G i2c $USER`
 2. Log out and log back in for changes to take effect
+
+### Service not starting at boot
+
+If the systemd service is not starting at boot:
+1. Check service status: `sudo systemctl status midi-clock.service`
+2. Check service logs: `journalctl -u midi-clock.service -n 50`
+3. Ensure the service is enabled: `sudo systemctl enable midi-clock.service`
+4. Verify the `run-on-console.sh` script exists and is executable
 
 ## License
 

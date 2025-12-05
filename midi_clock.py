@@ -132,9 +132,17 @@ class MIDIClock:
         self.display_thread = None
         self.display_stop_event = threading.Event()
         
+        # Beat ramp state - synced to MIDI clock pulses
+        self.beat_position = 0  # 0-3 (4 positions: x=0, 2, 4, 6)
+        self.clock_pulse_count = 0  # Count MIDI clock pulses (24 per beat)
+        
         # Joystick state
         self.last_joystick_time = 0
         self.joystick_debounce = 0.1  # 100ms debounce
+        self.held_direction = None  # Track which direction is being held
+        self.repeat_thread = None  # Thread for repeating BPM changes
+        self.repeat_stop_event = threading.Event()
+        self.last_joystick_event_time = {}  # Track last event time per direction
         
         # Start display thread
         self.start_display()
@@ -156,6 +164,14 @@ class MIDIClock:
                         midiout.send_message([MIDI_CLOCK])
                     except Exception as e:
                         print(f"{Colors.BRIGHT_RED}⚠ Error sending to {port_name}: {e}{Colors.RESET}")
+                
+                # Increment clock pulse counter for beat ramp sync
+                self.clock_pulse_count += 1
+                # Every 24 pulses = 1 beat, advance beat ramp
+                if self.clock_pulse_count >= PPQN:
+                    self.clock_pulse_count = 0
+                    # Advance beat position (0-3, cycles)
+                    self.beat_position = (self.beat_position + 1) % 4
             
             # Calculate sleep time based on current BPM
             interval = self.calculate_clock_interval(self.bpm)
@@ -165,6 +181,9 @@ class MIDIClock:
         """Start the MIDI clock on all open ports."""
         if not self.running:
             self.running = True
+            # Reset beat ramp position and clock pulse counter
+            self.beat_position = 0
+            self.clock_pulse_count = 0
             # Send start message to all open MIDI ports
             for midiout, port_name in self.midiout_ports:
                 try:
@@ -211,7 +230,7 @@ class MIDIClock:
             x_offset: x position (0-7)
             y_offset: y position (0-7)
             color: RGB tuple
-            small: if True, use 2x4 font, else use 3x5 font
+            small: if True, use 2x5 font, else use 3x5 font
         """
         if small:
             # Compact 2x5 font for 3-digit numbers (taller and more readable)
@@ -314,15 +333,56 @@ class MIDIClock:
                     if 0 <= idx < 64:
                         pixels[idx] = color
     
+    def draw_beat_ramp(self, pixels):
+        """Draw a 2x2 white box in the beat ramp (rows 6-7) with dimmed trail.
+        
+        The beat position is updated by the MIDI clock thread, so it's
+        perfectly synced to the actual MIDI clock pulses.
+        
+        Trail effect:
+        - Current beat: white (100%)
+        - Previous beats: 50% white (dimmed)
+        
+        Args:
+            pixels: 64-element list of RGB tuples
+        """
+        if not self.running:
+            # Don't show ramp when stopped
+            return
+        
+        # Colors: white (100%) and dimmed white (50%)
+        white = (255, 255, 255)
+        dimmed_white = (127, 127, 127)  # 50% brightness
+        
+        # Draw all 4 boxes (positions 0, 2, 4, 6)
+        for box_num in range(4):
+            x_pos = box_num * 2  # x positions: 0, 2, 4, 6
+            
+            # Current beat is white, previous beats are dimmed
+            if box_num == self.beat_position:
+                color = white  # Current beat: full brightness
+            elif box_num < self.beat_position:
+                color = dimmed_white  # Previous beats: 50% brightness
+            else:
+                # Future beats (shouldn't happen in normal flow, but handle it)
+                continue
+            
+            # Draw 2x2 box at this position (rows 6-7)
+            for y in range(2):  # rows 6-7
+                for x in range(2):  # 2 pixels wide
+                    idx = (y + 6) * 8 + (x + x_pos)
+                    if 0 <= idx < 64:
+                        pixels[idx] = color
+    
     def display_bpm(self):
-        """Display BPM statically on the LED matrix."""
+        """Display BPM statically on the LED matrix with beat ramp."""
         last_bpm = -1
         last_running = None
         
         while not self.display_stop_event.is_set():
             current_bpm = int(self.bpm)
             
-            # Update display if BPM or running state changed
+            # Update display if BPM or running state changed, or for beat ramp updates
             if current_bpm != last_bpm or self.running != last_running:
                 # Initialize pixel array (64 pixels, all black)
                 pixels = [(0, 0, 0)] * 64
@@ -331,29 +391,52 @@ class MIDIClock:
                 # Choose color: green if running, red if stopped
                 color = (0, 255, 0) if self.running else (255, 0, 0)
                 
-                # Display BPM number statically
+                # Display BPM number statically (rows 0-4)
                 if len(bpm_str) == 1:
-                    # Center single digit with 3x5 font
-                    self.draw_digit(pixels, bpm_str[0], 2, 1, color, small=False)
+                    # Center single digit with 3x5 font (starts at row 0)
+                    self.draw_digit(pixels, bpm_str[0], 2, 0, color, small=False)
                 elif len(bpm_str) == 2:
-                    # Two digits side by side with 3x5 font
-                    self.draw_digit(pixels, bpm_str[0], 0, 1, color, small=False)
-                    self.draw_digit(pixels, bpm_str[1], 4, 1, color, small=False)
+                    # Two digits side by side with 3x5 font (starts at row 0)
+                    self.draw_digit(pixels, bpm_str[0], 0, 0, color, small=False)
+                    self.draw_digit(pixels, bpm_str[1], 4, 0, color, small=False)
                 else:  # 3 digits - use compact 2x5 font (more readable)
                     # 2x5 font: each digit is 2 wide, with 1 pixel spacing
-                    # Positions: 0, 3, 6 (fits in 8 pixels width, centered vertically at row 1)
-                    self.draw_digit(pixels, bpm_str[0], 0, 1, color, small=True)
-                    self.draw_digit(pixels, bpm_str[1], 3, 1, color, small=True)
-                    self.draw_digit(pixels, bpm_str[2], 6, 1, color, small=True)
+                    # Positions: 0, 3, 6 (fits in 8 pixels width, starts at row 0)
+                    self.draw_digit(pixels, bpm_str[0], 0, 0, color, small=True)
+                    self.draw_digit(pixels, bpm_str[1], 3, 0, color, small=True)
+                    self.draw_digit(pixels, bpm_str[2], 6, 0, color, small=True)
+                
+                # Draw beat ramp (rows 6-7)
+                self.draw_beat_ramp(pixels)
                 
                 # Update the display
                 self.sense.set_pixels(pixels)
                 
                 last_bpm = current_bpm
                 last_running = self.running
+            else:
+                # Even if BPM/running state hasn't changed, update beat ramp
+                pixels = [(0, 0, 0)] * 64
+                bpm_str = f"{current_bpm}"
+                color = (0, 255, 0) if self.running else (255, 0, 0)
+                
+                # Redraw BPM digits
+                if len(bpm_str) == 1:
+                    self.draw_digit(pixels, bpm_str[0], 2, 0, color, small=False)
+                elif len(bpm_str) == 2:
+                    self.draw_digit(pixels, bpm_str[0], 0, 0, color, small=False)
+                    self.draw_digit(pixels, bpm_str[1], 4, 0, color, small=False)
+                else:
+                    self.draw_digit(pixels, bpm_str[0], 0, 0, color, small=True)
+                    self.draw_digit(pixels, bpm_str[1], 3, 0, color, small=True)
+                    self.draw_digit(pixels, bpm_str[2], 6, 0, color, small=True)
+                
+                # Update beat ramp
+                self.draw_beat_ramp(pixels)
+                self.sense.set_pixels(pixels)
             
             # Brief pause before checking for updates
-            time.sleep(0.1)
+            time.sleep(0.05)  # Faster update for smoother beat ramp
     
     def start_display(self):
         """Start the display update thread."""
@@ -362,8 +445,35 @@ class MIDIClock:
             self.display_thread = threading.Thread(target=self.display_bpm, daemon=True)
             self.display_thread.start()
     
+    def _repeat_bpm_change(self, direction, step):
+        """Repeatedly change BPM while joystick is held.
+        
+        Uses timeout to detect when joystick is released (no new events).
+        
+        Args:
+            direction: 'up' or 'down'
+            step: Amount to change BPM by
+        """
+        # Initial delay to avoid accidental rapid changes
+        time.sleep(0.3)
+        
+        # Then repeat with shorter interval, checking for timeout
+        timeout = 0.2  # If no new event in 200ms, assume released
+        while not self.repeat_stop_event.is_set() and self.held_direction == direction:
+            # Check if we've received a new event for this direction recently
+            last_event_time = self.last_joystick_event_time.get(direction, 0)
+            if time.time() - last_event_time > timeout:
+                # No new event, assume joystick was released
+                break
+            
+            if direction == 'up':
+                self.increase_bpm(step)
+            else:  # down
+                self.decrease_bpm(step)
+            time.sleep(0.15)  # Repeat every 150ms
+    
     def handle_joystick(self, event):
-        """Handle joystick events."""
+        """Handle joystick events with repeat functionality."""
         if event.action == 'pressed':
             current_time = time.time()
             
@@ -374,21 +484,91 @@ class MIDIClock:
             self.last_joystick_time = current_time
             
             if event.direction == 'up':
+                # Update last event time for this direction
+                self.last_joystick_event_time['up'] = current_time
+                
+                # Stop any existing repeat
+                self.held_direction = None
+                self.repeat_stop_event.set()
+                if self.repeat_thread and self.repeat_thread.is_alive():
+                    self.repeat_thread.join(timeout=0.1)
+                
+                # Immediate change
                 self.increase_bpm(1.0)
+                
+                # Start repeat thread
+                self.held_direction = 'up'
+                self.repeat_stop_event.clear()
+                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('up', 1.0), daemon=True)
+                self.repeat_thread.start()
+                
             elif event.direction == 'down':
+                # Update last event time for this direction
+                self.last_joystick_event_time['down'] = current_time
+                
+                # Stop any existing repeat
+                self.held_direction = None
+                self.repeat_stop_event.set()
+                if self.repeat_thread and self.repeat_thread.is_alive():
+                    self.repeat_thread.join(timeout=0.1)
+                
+                # Immediate change
                 self.decrease_bpm(1.0)
+                
+                # Start repeat thread
+                self.held_direction = 'down'
+                self.repeat_stop_event.clear()
+                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('down', 1.0), daemon=True)
+                self.repeat_thread.start()
+                
             elif event.direction == 'middle':
+                # Stop any repeat
+                self.held_direction = None
+                self.repeat_stop_event.set()
+                
                 # Toggle start/stop
                 if self.running:
                     self.stop_clock()
                 else:
                     self.start_clock()
+                    
             elif event.direction == 'left':
-                # Fine decrease
+                # Update last event time (use 'down' as the key since left decreases)
+                self.last_joystick_event_time['down'] = current_time
+                
+                # Stop any existing repeat
+                self.held_direction = None
+                self.repeat_stop_event.set()
+                if self.repeat_thread and self.repeat_thread.is_alive():
+                    self.repeat_thread.join(timeout=0.1)
+                
+                # Immediate change
                 self.decrease_bpm(0.1)
+                
+                # Start repeat thread for fine adjustment
+                self.held_direction = 'down'  # Use 'down' for left (decrease)
+                self.repeat_stop_event.clear()
+                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('down', 0.1), daemon=True)
+                self.repeat_thread.start()
+                
             elif event.direction == 'right':
-                # Fine increase
+                # Update last event time (use 'up' as the key since right increases)
+                self.last_joystick_event_time['up'] = current_time
+                
+                # Stop any existing repeat
+                self.held_direction = None
+                self.repeat_stop_event.set()
+                if self.repeat_thread and self.repeat_thread.is_alive():
+                    self.repeat_thread.join(timeout=0.1)
+                
+                # Immediate change
                 self.increase_bpm(0.1)
+                
+                # Start repeat thread for fine adjustment
+                self.held_direction = 'up'  # Use 'up' for right (increase)
+                self.repeat_stop_event.clear()
+                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('up', 0.1), daemon=True)
+                self.repeat_thread.start()
     
     def run(self):
         """Main run loop."""
@@ -424,6 +604,12 @@ class MIDIClock:
         self.stop_clock()
         self.stop_event.set()
         self.display_stop_event.set()
+        
+        # Stop joystick repeat thread
+        self.held_direction = None
+        self.repeat_stop_event.set()
+        if self.repeat_thread and self.repeat_thread.is_alive():
+            self.repeat_thread.join(timeout=0.5)
         
         if self.clock_thread and self.clock_thread.is_alive():
             self.clock_thread.join(timeout=1.0)

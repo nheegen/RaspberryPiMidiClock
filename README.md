@@ -1,6 +1,6 @@
 # Raspberry Pi MIDI Clock Master
 
-A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and ESI MidiMate eX USB MIDI interface.
+A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and USB MIDI interface. Optimized for ESI MidiMate eX but works with any USB MIDI device.
 
 ## Features
 
@@ -19,7 +19,7 @@ A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and ES
 
 - Raspberry Pi 3 Model B (or compatible)
 - Sense HAT
-- ESI MidiMate eX USB MIDI interface (or compatible USB MIDI device)
+- USB MIDI interface (any USB MIDI device; ESI MidiMate eX is auto-detected and preferred, but any device will work)
 
 ## Software Requirements
 
@@ -94,10 +94,12 @@ sudo systemctl stop midi-clock.service
 Or manually with `Ctrl+C` if running in foreground, or `pkill -f midi_clock.py` if running in background.
 
 The application will:
-- Automatically detect and open all ESI MIDIMATE eX ports (or first available MIDI port if ESI not found)
+- Automatically detect and open MIDI ports (prefers ESI MIDIMATE eX if present, otherwise uses first available MIDI port)
 - Send MIDI clock to all open ports simultaneously
 - Display the current BPM on the Sense HAT LED matrix
 - Respond to joystick input for BPM control and start/stop
+
+**Note:** The application works with any USB MIDI interface. It will automatically detect ESI MIDIMATE eX if connected, but will fall back to any other available MIDI device.
 
 ### Controls
 

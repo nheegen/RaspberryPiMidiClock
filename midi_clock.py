@@ -142,7 +142,6 @@ class MIDIClock:
         self.held_direction = None  # Track which direction is being held
         self.repeat_thread = None  # Thread for repeating BPM changes
         self.repeat_stop_event = threading.Event()
-        self.last_joystick_event_time = {}  # Track last event time per direction
         
         # Start display thread
         self.start_display()
@@ -156,8 +155,23 @@ class MIDIClock:
     
     def send_midi_clock(self):
         """Send MIDI clock pulses at the correct interval to all open ports."""
+        next_tick = time.perf_counter()
+        
         while not self.stop_event.is_set():
+            interval = self.calculate_clock_interval(self.bpm)
+            
             if self.running:
+                now = time.perf_counter()
+                
+                # Sleep until the next scheduled tick, but keep sleeps short to reduce jitter
+                if now < next_tick:
+                    time.sleep(min(0.002, next_tick - now))
+                    continue
+                
+                # If we're late by more than one interval, resync to avoid burst sending
+                if now - next_tick > interval:
+                    next_tick = now
+                
                 # Send clock to all open MIDI ports
                 for midiout, port_name in self.midiout_ports:
                     try:
@@ -172,10 +186,13 @@ class MIDIClock:
                     self.clock_pulse_count = 0
                     # Advance beat position (0-3, cycles)
                     self.beat_position = (self.beat_position + 1) % 4
-            
-            # Calculate sleep time based on current BPM
-            interval = self.calculate_clock_interval(self.bpm)
-            time.sleep(interval)
+                
+                # Schedule the next tick
+                next_tick += interval
+            else:
+                # If stopped, keep next_tick aligned with current bpm and sleep a bit
+                next_tick = time.perf_counter() + interval
+                time.sleep(0.01)
     
     def start_clock(self):
         """Start the MIDI clock on all open ports."""
@@ -448,7 +465,7 @@ class MIDIClock:
     def _repeat_bpm_change(self, direction, step):
         """Repeatedly change BPM while joystick is held.
         
-        Uses timeout to detect when joystick is released (no new events).
+        Continues until a different direction is pressed or stop event is set.
         
         Args:
             direction: 'up' or 'down'
@@ -457,15 +474,8 @@ class MIDIClock:
         # Initial delay to avoid accidental rapid changes
         time.sleep(0.3)
         
-        # Then repeat with shorter interval, checking for timeout
-        timeout = 0.2  # If no new event in 200ms, assume released
+        # Then repeat with shorter interval until stopped
         while not self.repeat_stop_event.is_set() and self.held_direction == direction:
-            # Check if we've received a new event for this direction recently
-            last_event_time = self.last_joystick_event_time.get(direction, 0)
-            if time.time() - last_event_time > timeout:
-                # No new event, assume joystick was released
-                break
-            
             if direction == 'up':
                 self.increase_bpm(step)
             else:  # down
@@ -474,101 +484,95 @@ class MIDIClock:
     
     def handle_joystick(self, event):
         """Handle joystick events with repeat functionality."""
-        if event.action == 'pressed':
-            current_time = time.time()
-            
-            # Debounce joystick input
-            if current_time - self.last_joystick_time < self.joystick_debounce:
+        # Stop repeating adjustment only when the stick is released
+        if event.action == 'released':
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.2)
+            return
+        
+        # Only care about press or hold; ignore anything else
+        if event.action not in ('pressed', 'held'):
+            return
+
+        current_time = time.time()
+        
+        # Debounce only the initial press to avoid double-triggers
+        if event.action == 'pressed' and current_time - self.last_joystick_time < self.joystick_debounce:
+            return
+        
+        self.last_joystick_time = current_time
+        
+        if event.direction == 'up':
+            # If already repeating up, keep going
+            if self.held_direction == 'up' and self.repeat_thread and self.repeat_thread.is_alive():
                 return
             
-            self.last_joystick_time = current_time
+            # Stop any existing repeat
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.1)
             
-            if event.direction == 'up':
-                # Update last event time for this direction
-                self.last_joystick_event_time['up'] = current_time
+            # Immediate change
+            self.increase_bpm(1.0)
+            
+            # Start repeat thread
+            self.held_direction = 'up'
+            self.repeat_stop_event.clear()
+            self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('up', 1.0), daemon=True)
+            self.repeat_thread.start()
+            
+        elif event.direction == 'down':
+            if self.held_direction == 'down' and self.repeat_thread and self.repeat_thread.is_alive():
+                return
+            
+            # Stop any existing repeat
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.1)
+            
+            # Immediate change
+            self.decrease_bpm(1.0)
+            
+            # Start repeat thread
+            self.held_direction = 'down'
+            self.repeat_stop_event.clear()
+            self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('down', 1.0), daemon=True)
+            self.repeat_thread.start()
+            
+        elif event.direction == 'middle':
+            # Stop any repeat
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.1)
+            
+            # Toggle start/stop
+            if self.running:
+                self.stop_clock()
+            else:
+                self.start_clock()
                 
-                # Stop any existing repeat
-                self.held_direction = None
-                self.repeat_stop_event.set()
-                if self.repeat_thread and self.repeat_thread.is_alive():
-                    self.repeat_thread.join(timeout=0.1)
-                
-                # Immediate change
-                self.increase_bpm(1.0)
-                
-                # Start repeat thread
-                self.held_direction = 'up'
-                self.repeat_stop_event.clear()
-                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('up', 1.0), daemon=True)
-                self.repeat_thread.start()
-                
-            elif event.direction == 'down':
-                # Update last event time for this direction
-                self.last_joystick_event_time['down'] = current_time
-                
-                # Stop any existing repeat
-                self.held_direction = None
-                self.repeat_stop_event.set()
-                if self.repeat_thread and self.repeat_thread.is_alive():
-                    self.repeat_thread.join(timeout=0.1)
-                
-                # Immediate change
-                self.decrease_bpm(1.0)
-                
-                # Start repeat thread
-                self.held_direction = 'down'
-                self.repeat_stop_event.clear()
-                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('down', 1.0), daemon=True)
-                self.repeat_thread.start()
-                
-            elif event.direction == 'middle':
-                # Stop any repeat
-                self.held_direction = None
-                self.repeat_stop_event.set()
-                
-                # Toggle start/stop
-                if self.running:
-                    self.stop_clock()
-                else:
-                    self.start_clock()
-                    
-            elif event.direction == 'left':
-                # Update last event time (use 'down' as the key since left decreases)
-                self.last_joystick_event_time['down'] = current_time
-                
-                # Stop any existing repeat
-                self.held_direction = None
-                self.repeat_stop_event.set()
-                if self.repeat_thread and self.repeat_thread.is_alive():
-                    self.repeat_thread.join(timeout=0.1)
-                
-                # Immediate change
-                self.decrease_bpm(0.1)
-                
-                # Start repeat thread for fine adjustment
-                self.held_direction = 'down'  # Use 'down' for left (decrease)
-                self.repeat_stop_event.clear()
-                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('down', 0.1), daemon=True)
-                self.repeat_thread.start()
-                
-            elif event.direction == 'right':
-                # Update last event time (use 'up' as the key since right increases)
-                self.last_joystick_event_time['up'] = current_time
-                
-                # Stop any existing repeat
-                self.held_direction = None
-                self.repeat_stop_event.set()
-                if self.repeat_thread and self.repeat_thread.is_alive():
-                    self.repeat_thread.join(timeout=0.1)
-                
-                # Immediate change
-                self.increase_bpm(0.1)
-                
-                # Start repeat thread for fine adjustment
-                self.held_direction = 'up'  # Use 'up' for right (increase)
-                self.repeat_stop_event.clear()
-                self.repeat_thread = threading.Thread(target=self._repeat_bpm_change, args=('up', 0.1), daemon=True)
-                self.repeat_thread.start()
+        elif event.direction == 'left':
+            # Stop any existing repeat and make a single fine decrease
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.1)
+            
+            self.decrease_bpm(0.1)
+            
+        elif event.direction == 'right':
+            # Stop any existing repeat and make a single fine increase
+            self.held_direction = None
+            self.repeat_stop_event.set()
+            if self.repeat_thread and self.repeat_thread.is_alive():
+                self.repeat_thread.join(timeout=0.1)
+            
+            self.increase_bpm(0.1)
     
     def run(self):
         """Main run loop."""

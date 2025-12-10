@@ -2,6 +2,8 @@
 
 A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and USB MIDI interface. Optimized to auto-detect and open all ports on the ESI MidiMate eX, but works with any class-compliant USB MIDI device.
 
+![Raspberry Pi with Sense HAT](images/RPI_SENSE_HAT.png)
+
 ## Features
 
 - Sends MIDI clock signals (24 pulses per quarter note) through USB MIDI interface
@@ -20,6 +22,8 @@ A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and US
 - Raspberry Pi 3 Model B (or compatible)
 - Sense HAT
 - USB MIDI interface (any class-compliant USB MIDI device; ESI MidiMate eX is auto-detected and both of its ports are opened when present)
+
+![ESI MidiMate eX](images/esi-midimate-ex.jpg)
 
 ## Software Requirements
 

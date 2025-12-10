@@ -2,7 +2,7 @@
 
 ## Overview
 
-This application sends MIDI clock signals to your connected MIDI device through the ESI MIDIMATE eX USB MIDI interface. It acts as a **master clock** that other MIDI devices can sync to.
+This application sends MIDI clock signals from the Raspberry Pi to any class-compliant USB MIDI interface. It acts as a **master clock** that other MIDI devices can sync to. If an ESI MIDIMATE eX is connected it will be preferred and both of its ports will be opened automatically, but any other USB-MIDI interface works as well.
 
 ## MIDI Clock Protocol
 
@@ -42,11 +42,11 @@ Interval (seconds) = 60 / (BPM × 24)
 Raspberry Pi → ESI MIDIMATE eX (USB) → MIDI OUT → Your MIDI Device
 ```
 
-Your ESI MIDIMATE eX has two MIDI outputs:
-- **MIDI 1** (Port 1): Primary MIDI output
-- **MIDI 2** (Port 2): Secondary MIDI output
+If an ESI MIDIMATE eX is present it exposes two MIDI outputs:
+- **MIDI 1** (Port 1)
+- **MIDI 2** (Port 2)
 
-The application automatically detects and uses **both ESI MIDIMATE eX ports simultaneously**, so MIDI clock is sent to both MIDI outputs at the same time.
+When detected, the app opens both ports and sends clock to each. With other USB interfaces, the app opens the first non-"Midi Through" port by default (or the first available port as a fallback).
 
 ## How to Use
 
@@ -77,28 +77,18 @@ The Sense HAT LED matrix shows:
 
 ### Automatic Port Detection
 
-The application now **automatically detects and opens all ESI MIDIMATE eX ports** (both MIDI 1 and MIDI 2), sending MIDI clock to both outputs simultaneously.
+- If an ESI MIDIMATE eX is connected: open all of its ports (MIDI 1 and MIDI 2) and send clock to both.
+- If no ESI MIDIMATE eX is present: open the first non-"Midi Through" USB-MIDI port (fallback to the first port if only "Midi Through" exists).
 
-When you run the application, you'll see:
-```
-Available MIDI ports: ['Midi Through:...', 'ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 1', 'ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2']
-Found 2 ESI MIDIMATE eX port(s):
-  Opened: ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 1
-  Opened: ESI MIDIMATE eX:ESI MIDIMATE eX MIDI 2
-```
+When you run the application you'll see the detected ports and which ones were opened. All opened ports receive the same clock/start/stop messages.
 
 ### Manual Port Selection
 
-By default, the application opens all ESI MIDIMATE eX ports. If you want to use specific ports, edit `midi_clock.py` and change:
+You can pass `midi_port` to `MIDIClock` to override auto-detection:
 ```python
-clock = MIDIClock(midi_port=None)  # Auto-detect all ESI ports
-```
-
-To:
-```python
-clock = MIDIClock(midi_port=1)  # Use only port 1 (MIDI 1)
-# or
-clock = MIDIClock(midi_port=[1, 2])  # Use both ports 1 and 2 explicitly
+clock = MIDIClock(midi_port=None)      # Auto: prefer MIDIMATE, else first non-"Midi Through"
+clock = MIDIClock(midi_port=1)         # Use only port index 1
+clock = MIDIClock(midi_port=[1, 2])    # Use specific port indices
 ```
 
 ### Connecting to Your MIDI Device
@@ -134,7 +124,7 @@ The application uses multiple threads:
 
 ### Accuracy
 
-The timing uses Python's `time.sleep()` which is accurate enough for MIDI clock on a Raspberry Pi. The clock thread runs continuously and calculates the exact interval based on the current BPM.
+The clock thread schedules ticks using `time.perf_counter()` and short sleeps to reduce jitter, resyncing if the loop ever runs late. It calculates the interval from the current BPM and maintains a scheduled next-tick target rather than relying on long sleeps.
 
 ### MIDI Port Selection Logic
 

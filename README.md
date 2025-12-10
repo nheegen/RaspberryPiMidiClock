@@ -1,16 +1,16 @@
 # Raspberry Pi MIDI Clock Master
 
-A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and USB MIDI interface. Optimized for ESI MidiMate eX but works with any USB MIDI device.
+A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and USB MIDI interface. Optimized to auto-detect and open all ports on the ESI MidiMate eX, but works with any class-compliant USB MIDI device.
 
 ## Features
 
 - Sends MIDI clock signals (24 pulses per quarter note) through USB MIDI interface
 - Displays current BPM on Sense HAT LED matrix
 - Joystick control:
-  - **Up**: Increase BPM by 1
-  - **Down**: Decrease BPM by 1
-  - **Left**: Fine decrease BPM by 0.1
-  - **Right**: Fine increase BPM by 0.1
+  - **Up**: Increase BPM by 1 (repeats while held)
+  - **Down**: Decrease BPM by 1 (repeats while held)
+  - **Left**: Fine decrease BPM by 0.1 (single step)
+  - **Right**: Fine increase BPM by 0.1 (single step)
   - **Press (Middle)**: Start/Stop MIDI clock
 - Accurate timing for MIDI clock messages
 - Visual feedback: Green display when running, red when stopped
@@ -19,7 +19,7 @@ A MIDI clock master application for Raspberry Pi 3 Model B with Sense HAT and US
 
 - Raspberry Pi 3 Model B (or compatible)
 - Sense HAT
-- USB MIDI interface (any USB MIDI device; ESI MidiMate eX is auto-detected and preferred, but any device will work)
+- USB MIDI interface (any class-compliant USB MIDI device; ESI MidiMate eX is auto-detected and both of its ports are opened when present)
 
 ## Software Requirements
 
@@ -94,7 +94,7 @@ sudo systemctl stop midi-clock.service
 Or manually with `Ctrl+C` if running in foreground, or `pkill -f midi_clock.py` if running in background.
 
 The application will:
-- Automatically detect and open MIDI ports (prefers ESI MIDIMATE eX if present, otherwise uses first available MIDI port)
+- Automatically detect and open MIDI ports (prefers ESI MIDIMATE eX and opens all its ports if present; otherwise uses the first non-"Midi Through" port, or the first available port as a fallback)
 - Send MIDI clock to all open ports simultaneously
 - Display the current BPM on the Sense HAT LED matrix
 - Respond to joystick input for BPM control and start/stop
